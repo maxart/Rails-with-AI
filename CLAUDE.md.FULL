@@ -271,13 +271,13 @@ end
 ### Rich Models
 
 - Put business logic in models and model concerns, not controllers or service objects.
-- Keep the main model file under ~100 lines. If it's growing past that, extract concerns.
+- Keep the main model file under ~100 lines. Extract concerns when it grows.
+- Model body ordering: includes → associations → callbacks → scopes → delegation → validations → public methods → private.
 
 ### Concerns
 
-- Model concerns live in `app/models/concerns/` for cross-cutting behavior or in `app/models/<model>/` for model-specific aspects.
-- Include concerns alphabetically.
-- One concern, one responsibility.
+- Cross-cutting concerns in `app/models/concerns/`; model-specific in `app/models/<model>/`.
+- Include concerns alphabetically. One concern, one responsibility.
 
 ```ruby
 # app/models/user.rb
@@ -411,10 +411,27 @@ User.active.pluck(:email)      # lean Array<String>
 
 - Prefer scopes over class methods. Scopes always return a relation and chain safely.
 - Name by intent: `scope :recent` not `scope :ordered_by_created_at_desc`.
+- Group scopes by category: ordering → state → preloading → parameterized.
 
 ```ruby
-scope :recent, -> { where(created_at: 1.week.ago..).order(created_at: :desc) }
-Post.published.recent.includes(:author)  # chains naturally
+# Ordering scopes
+scope :recent, -> { order(created_at: :desc, id: :desc) }
+
+# State scopes
+scope :open,   -> { where.missing(:closure) }
+scope :closed, -> { joins(:closure) }
+
+# Preloading scopes
+scope :with_authors, -> { preload(:author) }
+
+# Parameterized scopes
+scope :sorted_by, ->(attribute) {
+  case attribute.to_s
+  when "recent"   then recent
+  when "popular"  then order(votes_count: :desc)
+  else recent
+  end
+}
 ```
 
 ### Transactions
@@ -480,7 +497,7 @@ end
 ### Jobs Are Shallow Wrappers
 
 - Jobs contain no business logic. They unwrap arguments and call a model method.
-- All the real work lives on the model, where it's testable without the job runner.
+- Organize jobs in namespace directories: `app/jobs/message/relay_job.rb` for `Message::RelayJob`.
 
 ### Retry and Discard
 

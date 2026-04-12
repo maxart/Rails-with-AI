@@ -12,8 +12,8 @@ Pick the one that fits your project.
 
 | File | Size | Contains | Best for |
 |---|---|---|---|
-| [`CLAUDE.md.FULL`](./CLAUDE.md.FULL) | 39,682 chars | All rules **plus BAD/GOOD code examples** | Projects where you want Claude to pattern-match from examples, or onboarding human devs alongside Claude |
-| [`CLAUDE.md.SHORT`](./CLAUDE.md.SHORT) | 28,699 chars | All rules, **no code examples** | Context-sensitive projects, large monorepos, or when you already trust Claude to apply Rails idioms correctly |
+| [`CLAUDE.md.FULL`](./CLAUDE.md.FULL) | 40,146 chars | All rules **plus BAD/GOOD code examples** | Projects where you want Claude to pattern-match from examples, or onboarding human devs alongside Claude |
+| [`CLAUDE.md.SHORT`](./CLAUDE.md.SHORT) | 28,917 chars | All rules, **no code examples** | Context-sensitive projects, large monorepos, or when you already trust Claude to apply Rails idioms correctly |
 
 Both files cover the **same rules** — the only difference is whether each rule is illustrated with a BAD/GOOD code block. Rules that lived inside code-only examples in the FULL version were folded into prose in SHORT, so no guidance is lost.
 

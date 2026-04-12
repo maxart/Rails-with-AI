@@ -141,13 +141,13 @@ Prioritize correctness, readability, and security. Do not over-engineer.
 ### Rich Models
 
 - Put business logic in models and model concerns, not controllers or service objects.
-- Keep the main model file under ~100 lines. If it's growing past that, extract concerns.
+- Keep the main model file under ~100 lines. Extract concerns when it grows.
+- Model body ordering: includes → associations → callbacks → scopes → delegation → validations → public methods → private.
 
 ### Concerns
 
-- Model concerns live in `app/models/concerns/` for cross-cutting behavior or in `app/models/<model>/` for model-specific aspects.
-- Include concerns alphabetically in the class body.
-- One concern, one responsibility.
+- Cross-cutting concerns in `app/models/concerns/`; model-specific in `app/models/<model>/`.
+- Include concerns alphabetically. One concern, one responsibility.
 - Module name matches file path: `User::Authentication` lives at `app/models/user/authentication.rb`.
 
 ### Modern ActiveRecord Features
@@ -207,8 +207,9 @@ Prioritize correctness, readability, and security. Do not over-engineer.
 
 ### Scopes
 
-- Prefer scopes over class methods for query fragments. Scopes compose and chain naturally.
-- Name scopes by intent, not mechanism: `scope :recent` not `scope :ordered_by_created_at_desc`.
+- Prefer scopes over class methods. Scopes always return a relation and chain safely.
+- Name by intent: `scope :recent` not `scope :ordered_by_created_at_desc`.
+- Group scopes by category: ordering → state → preloading → parameterized. Parameterized scopes accept arguments and use `case` for common filtering patterns.
 
 ### Transactions
 
@@ -240,7 +241,7 @@ Prioritize correctness, readability, and security. Do not over-engineer.
 ### Jobs Are Shallow Wrappers
 
 - Jobs contain no business logic. They unwrap arguments and call a model method.
-- All the real work lives on the model, where it's testable without the job runner.
+- Organize jobs in namespace directories: `app/jobs/message/relay_job.rb` for `Message::RelayJob`.
 
 ### Retry and Discard
 
