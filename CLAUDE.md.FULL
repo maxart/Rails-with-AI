@@ -1,0 +1,1164 @@
+# Rails 8+ Project -- Claude Code Instructions
+
+## Identity
+
+You are working on a production Rails 8+ application. Follow modern Rails best
+practices (2025+) using Hotwire (Turbo + Stimulus), the Solid Trio (Queue,
+Cache, Cable), and DHH-style coding conventions. Write clean, idiomatic Ruby.
+Prioritize correctness, readability, and security. Do not over-engineer.
+
+---
+
+## Output and Efficiency
+
+<!-- Adapted from https://github.com/drona23/claude-token-efficient -->
+
+### Response Style
+
+- Return code first. Explanation after, only if non-obvious.
+- No sycophantic openers or closing fluff. Do not restate the question.
+- No unsolicited suggestions beyond the requested scope.
+- Be concise in output but thorough in reasoning.
+- Use comments sparingly -- only where logic is unclear.
+
+### Work Efficiency
+
+- Read before writing. One focused coding pass. No write-delete-rewrite cycles.
+- Do not re-read files already read unless they may have changed.
+- If unsure: say so. Never guess or invent file paths, class names, or APIs.
+- User instructions always override this file.
+
+### Token Efficiency
+
+- Targeted reads (offset/limit) over full-file reads. Use Grep/Glob for search.
+- Batch independent tool calls in parallel. Prefer Edit over Write.
+- Show only changed code blocks when explaining fixes.
+- Omit requires the reader can infer from existing patterns.
+- Keep explanations to one or two sentences. Skip if code is self-explanatory.
+- Budget: 50 tool calls maximum per task.
+
+### ASCII Output
+
+- No em dashes, smart quotes, or Unicode bullets in code output.
+- Plain hyphens and straight quotes only. Copy-paste safe.
+
+### Code Review Behavior
+
+- State the bug. Show the fix. Stop. No compliments, no out-of-scope suggestions.
+
+### Debugging Behavior
+
+- Never speculate without reading the relevant code first.
+- State what you found, where, and the fix. One pass. If cause is unclear: say so.
+
+---
+
+## Ruby Style and Code Quality Rules
+
+### General
+
+- Simplest code that solves the problem. Minimal runtime cost.
+- One class or module per file. CamelCase class names. Files under 200 lines.
+- Only comment non-obvious "why" -- never "what". Remove dead code; do not comment it out.
+- `frozen_string_literal: true` magic comment at the top of every Ruby file.
+- Double quotes by default. Single quotes only when the string contains a contraction or backslash escapes you want literal.
+- No speculative features. No abstractions for single-use operations.
+- Three similar lines is better than a premature abstraction.
+- Prefer plain Ruby over gems when the problem fits in 20 lines. DHH's omakase philosophy: trust Rails, trust Ruby, reach for dependencies last.
+
+### Conditionals
+
+- **Prefer expanded conditionals over guard clauses** for anything beyond a trivial early-exit. Expanded `if/else` reads linearly; guards force mental state-holding.
+- **Exception**: a single guard at method start is fine when the body is non-trivial.
+- Use assignment-in-condition when clearer: `if user = User.find_by(...)`.
+
+```ruby
+# BAD: stacked guard clauses
+def publish(post)
+  return unless post
+  return if post.draft?
+  return if post.published_at.present?
+  post.update!(published_at: Time.current)
+end
+
+# GOOD: expanded conditional
+def publish(post)
+  if post && !post.draft? && post.published_at.nil?
+    post.update!(published_at: Time.current)
+  end
+end
+```
+
+### Method Ordering
+
+- Class methods first (`self.xxx`), then public instance methods, then private.
+- Order private methods by call sequence -- readers follow flow top-to-bottom.
+
+```ruby
+# BAD: private methods in random order
+class Invoice
+  def finalize
+    charge_card
+    send_receipt
+  end
+
+  private
+
+  def send_receipt = ReceiptMailer.with(invoice: self).deliver_later
+  def charge_card  = Stripe::Charge.create(amount: total_cents, source: payment_token)
+end
+
+# GOOD: ordered by call sequence, indented under private
+class Invoice
+  def finalize
+    charge_card
+    send_receipt
+  end
+
+  private
+    def charge_card  = Stripe::Charge.create(amount: total_cents, source: payment_token)
+    def send_receipt = ReceiptMailer.with(invoice: self).deliver_later
+end
+```
+
+### Visibility Modifiers
+
+- No blank line between `private` and the methods beneath it.
+- Indent method definitions under `private` by two spaces (so visibility is a visual scope, not just a declaration).
+- Exception: if a module contains only private methods, place `private` at the top with a blank line after it and do NOT indent.
+
+### Bang Methods
+
+- Only use `!` on methods that have a non-bang counterpart (`save`/`save!`, `create`/`create!`, `update`/`update!`).
+- Do not tack `!` onto a method name just to signal destructiveness. Ruby has plenty of destructive methods without bangs (`push`, `delete`, `replace`).
+
+### Blocks and Enumerables
+
+- Use `.each` when you do not need the return value. Use `.map` only when the result is used.
+- Prefer `.find`, `.select`, `.reject`, `.any?`, `.all?`, `.none?` over hand-rolled loops.
+- `.find_each` for record batches (see Section 6).
+
+### Value Objects
+
+- Use `Data.define(:a, :b)` (Ruby 3.2+) or `Struct.new(:a, :b)` for simple immutable value holders with no behavior.
+- Promote to a full class when you need validation, defaults, or methods.
+
+---
+
+## Controller Rules
+
+### REST Purity
+
+- Model every endpoint as a CRUD operation on a resource. If an action doesn't map cleanly to `index/show/new/create/edit/update/destroy`, **create a new resource** instead of adding custom actions.
+- Never add verbs like `post :close` or `post :approve` to an existing controller. Extract the state change into its own resource.
+
+```ruby
+# BAD: custom actions bolted onto an existing controller
+Rails.application.routes.draw do
+  resources :cards do
+    member do
+      post :close
+      post :reopen
+      post :archive
+    end
+  end
+end
+
+# GOOD: each state change is its own resource
+Rails.application.routes.draw do
+  resources :cards do
+    resource :closure,  only: [ :create, :destroy ]  # close + reopen
+    resource :archival, only: [ :create ]
+  end
+end
+```
+
+### Thin Controllers
+
+- Controllers set up instance variables, call a model method, and render. That's it.
+- Business logic lives in models (and model concerns). If a controller action grows beyond ~10 lines, you're probably missing a model method.
+
+```ruby
+# BAD: business logic in the controller
+class SubscriptionsController < ApplicationController
+  def create
+    @sub = Subscription.new(subscription_params)
+    @sub.user = Current.user
+    @sub.trial_ends_at = 14.days.from_now
+    @sub.plan = Plan.find(params[:plan_id])
+    if @sub.save
+      Billing::Stripe.create_customer(@sub)
+      WelcomeMailer.with(subscription: @sub).deliver_later
+      redirect_to @sub
+    else
+      render :new, status: :unprocessable_entity
+    end
+  end
+end
+
+# GOOD: the model does the work
+class SubscriptionsController < ApplicationController
+  def create
+    @sub = Current.user.subscriptions.start(subscription_params)
+    if @sub.persisted?
+      redirect_to @sub
+    else
+      render :new, status: :unprocessable_entity
+    end
+  end
+
+  private
+    def subscription_params = params.expect(subscription: [ :plan_id ])
+end
+```
+
+### Strong Params
+
+- Always whitelist with `params.expect` (Rails 8+) or `params.require(...).permit(...)`.
+- Define a private `<resource>_params` method. `params.expect` raises on shape mismatches and returns stricter types than `permit`. Prefer it.
+
+```ruby
+# BAD
+def update = @post.update(params[:post])
+
+# GOOD
+def update
+  @post.update(post_params) ? redirect_to(@post) : render(:edit, status: :unprocessable_entity)
+end
+
+private
+  def post_params = params.expect(post: [ :title, :body, :published, tag_ids: [] ])
+```
+
+### Before Actions and Concerns
+
+- Use `before_action` for setup: loading records, checking permissions, scoping to `Current`.
+- Extract shared behavior into concerns under `app/controllers/concerns/`.
+- Skip with `skip_before_action` judiciously. Prefer declarative class methods (e.g. `allow_unauthenticated_access only: :new`) over ad-hoc skips.
+
+```ruby
+# app/controllers/concerns/authentication.rb
+module Authentication
+  extend ActiveSupport::Concern
+
+  included do
+    before_action :require_authentication
+    helper_method :authenticated?
+  end
+
+  class_methods do
+    def allow_unauthenticated_access(**options)
+      skip_before_action :require_authentication, **options
+    end
+  end
+
+  private
+    def authenticated? = Current.session.present?
+    def require_authentication = authenticated? || redirect_to(new_session_path)
+end
+```
+
+### Responses
+
+- Use `head :status_code` for responses without a body: `head :forbidden`, `head :no_content`.
+- Return the right status on failed writes: `render :new, status: :unprocessable_entity` (not a plain `render :new`).
+- Turbo relies on `:unprocessable_entity` to re-render forms in place.
+
+---
+
+## Model Rules
+
+### Rich Models
+
+- Put business logic in models and model concerns, not controllers or service objects.
+- Keep the main model file under ~100 lines. If it's growing past that, extract concerns.
+
+### Concerns
+
+- Model concerns live in `app/models/concerns/` for cross-cutting behavior or in `app/models/<model>/` for model-specific aspects.
+- Include concerns alphabetically.
+- One concern, one responsibility.
+
+```ruby
+# app/models/user.rb
+class User < ApplicationRecord
+  include Authentication, Avatarable, Searchable, Tokenizable
+
+  has_many :posts, dependent: :destroy
+  has_many :sessions, dependent: :destroy
+
+  normalizes :email, with: -> { _1.strip.downcase }
+
+  validates :email, presence: true, uniqueness: true
+end
+
+# app/models/user/authentication.rb
+module User::Authentication
+  extend ActiveSupport::Concern
+
+  included do
+    has_secure_password
+    generates_token_for :password_reset, expires_in: 15.minutes
+  end
+end
+```
+
+### Modern ActiveRecord Features
+
+- `has_secure_password` for password hashing (bcrypt included).
+- `normalizes :attr, with: ->(v) { ... }` for auto-normalizing (emails to lowercase, phone numbers, etc.).
+- `encrypts :attr` for column-level encryption (AES-256-GCM by default).
+- `generates_token_for :purpose, expires_in: 15.minutes { record.password_salt }` for signed, scoped, time-limited tokens. Use for password resets, email confirmation, magic links.
+- Enums with prefixes to avoid collisions.
+
+```ruby
+# GOOD: modern ActiveRecord features replace hand-rolled callbacks
+class User < ApplicationRecord
+  has_secure_password
+  normalizes :email, with: -> { _1.strip.downcase }
+  encrypts :two_factor_secret
+  generates_token_for :password_reset, expires_in: 15.minutes do
+    password_salt.last(10)
+  end
+end
+```
+
+```ruby
+# BAD: unprefixed enum collides with method names
+enum status: { draft: 0, published: 1, archived: 2 }
+
+# GOOD: prefixed -- Post.status_draft, @post.status_published?
+enum :status, { draft: 0, published: 1, archived: 2 }, prefix: true
+```
+
+### Defaults and Delegation
+
+- Use lambda defaults on associations: `belongs_to :creator, default: -> { Current.user }`.
+- Use `delegate` to avoid repetitive getter chains: `delegate :name, :email, to: :user, prefix: true`.
+
+### Validations
+
+- Validate what the database cannot enforce: business rules, format, presence, uniqueness (paired with a unique index).
+- Use custom validator classes for complex rules that repeat across models.
+
+---
+
+## ActiveRecord and Query Rules
+
+### Associations
+
+- `inverse_of` on bidirectional associations. Prevents N+1 when you traverse the graph in memory.
+- `touch: true` on `belongs_to` when parent cache keys should bust on child updates.
+- `counter_cache: true` to cache counts without a COUNT query.
+- `dependent: :destroy` or `dependent: :delete_all` or `dependent: :nullify` -- pick one explicitly. Never leave orphans.
+
+```ruby
+# GOOD: inverse relationship, cache bust, orphan safety
+class Post < ApplicationRecord
+  belongs_to :author, class_name: "User", inverse_of: :posts,
+             counter_cache: :posts_count, touch: true
+end
+
+class User < ApplicationRecord
+  has_many :posts, inverse_of: :author, dependent: :destroy
+end
+```
+
+### N+1 Prevention
+
+- `includes(:assoc)` when you touch the association on each record.
+- `preload(:assoc)` when you don't need the association in the SQL WHERE.
+- `eager_load(:assoc)` when you do (generates LEFT OUTER JOIN).
+- Enable `strict_loading` in development to catch N+1 early.
+
+```ruby
+# BAD: N+1
+Post.recent.each { |p| puts p.author.name }
+
+# GOOD
+Post.recent.includes(:author).each { |p| puts p.author.name }
+```
+
+### Query Idioms
+
+- `exists?` over `present?` -- runs `SELECT 1 LIMIT 1` instead of loading the full relation.
+- `pluck(:col)` when you only need columns as plain Ruby.
+- `where.missing(:assoc)` for "has no associated record". `where.associated(:assoc)` for the inverse.
+- `size` over `count` when the relation is already loaded.
+
+```ruby
+# BAD / GOOD pairs
+@user.posts.present?            # loads all posts
+@user.posts.exists?             # SELECT 1 LIMIT 1
+
+User.left_joins(:sub).where(subscriptions: { id: nil })
+User.where.missing(:subscription)  # cleaner
+
+User.active.map(&:email)       # loads full AR objects
+User.active.pluck(:email)      # lean Array<String>
+```
+
+### Batching
+
+- `find_each` for large datasets (constant memory, default batch 1,000). `find_each(batch_size: 500, &:send_reminder)`.
+
+### Bulk Writes
+
+- `insert_all`/`upsert_all` for speed (skip callbacks/validations -- know the trade-off).
+- `update_all` for bulk updates that deliberately skip callbacks.
+
+### Scopes
+
+- Prefer scopes over class methods. Scopes always return a relation and chain safely.
+- Name by intent: `scope :recent` not `scope :ordered_by_created_at_desc`.
+
+```ruby
+scope :recent, -> { where(created_at: 1.week.ago..).order(created_at: :desc) }
+Post.published.recent.includes(:author)  # chains naturally
+```
+
+### Transactions
+
+- Wrap related writes in `transaction do ... end` so partial failures roll back.
+- Never enqueue jobs or call external services inside a transaction (see Section 7 for the `_commit` rule).
+
+---
+
+## Callback and Job Rules
+
+### Lambda Callback Syntax (MANDATORY)
+
+- **ALWAYS** lambda syntax: `after_save -> { board.touch }`. **NEVER** symbol syntax: `after_save :touch_board`.
+- Lambdas show what runs at the call site, eliminate indirection, and make callback ordering greppable.
+
+```ruby
+# BAD: symbol form -- must scroll to find the implementation
+after_create :notify_author
+after_update :broadcast_update
+
+# GOOD: lambda form -- visible at declaration
+after_create_commit -> { AuthorMailer.with(comment: self).notify_later }
+after_update_commit -> { broadcast_replace_to post }
+```
+
+### Commit Callbacks for Async Work (MANDATORY)
+
+- `after_*_commit` for anything that enqueues a job, calls an external API, or broadcasts over Turbo.
+- Plain `after_*` runs inside the transaction -- enqueuing from there races (worker reads before commit) and causes lock contention.
+- Non-commit callbacks (`before_save`, `after_save`) are fine for synchronous in-transaction work: setting defaults, computing derived values.
+
+```ruby
+# BAD: job fires inside transaction
+after_create -> { RelayMessageJob.perform_later(self) }
+
+# GOOD: fires after commit
+after_create_commit -> { RelayMessageJob.perform_later(self) }
+
+# GOOD: non-commit for pure in-transaction work
+before_create -> { self.number ||= generate_number }
+```
+
+### The `_later` / `_now` Pair
+
+- Model method `<verb>_later` enqueues, `<verb>_now` does the work. Job's `perform` is a one-liner calling `_now`.
+- Keeps jobs shallow, lets you test synchronously, and makes the async/sync split obvious.
+
+```ruby
+# app/models/message.rb
+class Message < ApplicationRecord
+  after_create_commit -> { relay_later }
+  def relay_later = RelayMessageJob.perform_later(self)
+  def relay_now   = recipients.each { |r| Transport.send(self, to: r) }
+end
+
+# app/jobs/relay_message_job.rb -- shallow wrapper
+class RelayMessageJob < ApplicationJob
+  def perform(message) = message.relay_now
+end
+```
+
+### Jobs Are Shallow Wrappers
+
+- Jobs contain no business logic. They unwrap arguments and call a model method.
+- All the real work lives on the model, where it's testable without the job runner.
+
+### Retry and Discard
+
+- Use `retry_on` for transient failures with exponential backoff.
+- Use `discard_on` for permanent failures you don't want retried.
+- Let everything else bubble so Solid Queue records the failure.
+
+```ruby
+class ApplicationJob < ActiveJob::Base
+  retry_on Net::OpenTimeout, Net::ReadTimeout, wait: :polynomially_longer, attempts: 5
+  discard_on ActiveJob::DeserializationError
+  discard_on ActiveRecord::RecordNotFound
+end
+```
+
+### Recurring Tasks
+
+- Define scheduled jobs in `config/recurring.yml` (Solid Queue's native format). No `whenever` gem, no cron.
+
+```yaml
+# config/recurring.yml
+production:
+  clean_expired_sessions:
+    class: CleanExpiredSessionsJob
+    schedule: every 1 hour
+  send_digest_emails:
+    class: SendDigestEmailsJob
+    schedule: every day at 9am
+```
+
+---
+
+## Hotwire Rules (Turbo and Stimulus)
+
+### Turbo Frames
+
+- Use `turbo_frame_tag` to scope independently refreshable regions of a page.
+- Set `loading: "lazy"` on frames whose content is expensive or below the fold.
+- Never style the `<turbo-frame>` element directly -- style content inside it.
+- Use `target: "_top"` when a link inside a frame should break out and load the full page.
+
+```erb
+<%# GOOD: comments refresh independently in their own frame %>
+<%= turbo_frame_tag dom_id(@post, :comments), loading: "lazy",
+                    src: post_comments_path(@post) do %>
+  <p>Loading comments...</p>
+<% end %>
+```
+
+### Turbo Streams and Broadcasts
+
+- Subscribe to broadcasts with `turbo_stream_from` in the view.
+- Emit broadcasts from `*_commit` callbacks on the model (never from plain `after_*`, per Section 7).
+- Scope broadcasts to the current user or account to avoid cross-tenant leaks.
+
+```erb
+<%# app/views/messages/index.html.erb %>
+<%= turbo_stream_from Current.user, "messages" %>
+
+<div id="messages">
+  <%= render @messages %>
+</div>
+```
+
+```ruby
+# app/models/message.rb
+class Message < ApplicationRecord
+  belongs_to :user
+
+  after_create_commit  -> { broadcast_append_to  user, :messages, target: "messages" }
+  after_update_commit  -> { broadcast_replace_to user, :messages }
+  after_destroy_commit -> { broadcast_remove_to  user, :messages }
+end
+```
+
+### Server-Rendered HTML Only
+
+- Never generate HTML in JavaScript. Ever.
+- If you need new markup on the client, fetch a rendered partial from the server.
+- This keeps views themeable from one place, keeps Rails helpers authoritative, and lets system tests exercise real markup.
+
+```javascript
+// BAD: HTML built in JS -- bypasses Rails helpers, XSS risk
+this.listTarget.insertAdjacentHTML("beforeend", `<div>${body}</div>`)
+
+// GOOD: fetch a server-rendered partial
+const response = await fetch("/comments", {
+  method: "POST",
+  headers: { "Accept": "text/html", "X-CSRF-Token": this.csrfToken },
+  body: new URLSearchParams({ "comment[body]": body })
+})
+this.listTarget.insertAdjacentHTML("beforeend", await response.text())
+```
+
+### Stimulus Controllers
+
+- One controller per file, named by function: `auto_save_controller.js`, `clipboard_controller.js`.
+- Declare `static targets`, `static values`, `static outlets`, `static classes` at the top.
+- Use private class fields (`#field`) for internal state.
+- Organize methods into three comment-labeled sections: **Lifecycle**, **Actions**, **Private**.
+
+```javascript
+// app/javascript/controllers/auto_save_controller.js
+import { Controller } from "@hotwired/stimulus"
+
+export default class extends Controller {
+  static targets = [ "form", "status" ]
+  static values  = { delay: { type: Number, default: 1000 } }
+  #timer = null
+
+  // Lifecycle
+  connect()    { this.element.addEventListener("input", this.#schedule) }
+  disconnect() { clearTimeout(this.#timer) }
+
+  // Actions
+  save() { this.formTarget.requestSubmit(); this.statusTarget.textContent = "Saved" }
+
+  // Private
+  #schedule = () => {
+    clearTimeout(this.#timer)
+    this.#timer = setTimeout(() => this.save(), this.delayValue)
+  }
+}
+```
+
+### Native `<dialog>` for Modals
+
+- Use the HTML `<dialog>` element with `showModal()`. Do not roll your own overlay div.
+- Close on Escape is built in. Close on backdrop click via a small Stimulus action.
+
+```erb
+<dialog data-controller="dialog"
+        data-action="click->dialog#closeOnBackdrop keydown.esc->dialog#close">
+  <%= turbo_frame_tag "modal" do %>
+    <%= render "form", post: @post %>
+  <% end %>
+</dialog>
+```
+
+---
+
+## View and ERB Rules
+
+### Partials
+
+- Extract repeated markup into partials. Render collections with `render @items` or `render partial: "item", collection: @items`.
+- Rails uses the model's `to_partial_path` -- `render @post` finds `app/views/posts/_post.html.erb` automatically.
+
+```erb
+<%# BAD %>
+<% @posts.each do |post| %>
+  <article><h2><%= post.title %></h2></article>
+<% end %>
+
+<%# GOOD: collection render -- caches cleanly, uses to_partial_path %>
+<%= render @posts %>
+```
+
+### DOM IDs and Classes
+
+- Use `dom_id(@post)` and `dom_class(@post)` for stable, conventional ids. They match the patterns `broadcast_*_to` emits.
+
+```erb
+<%# BAD %>                              <%# GOOD: matches Turbo broadcasts %>
+<div id="post-<%= @post.id %>">         <%= tag.div id: dom_id(@post) do %>
+```
+
+### Tag Helpers
+
+- Use `tag.div`, `tag.p`, `tag.a` builders rather than string-concatenated HTML.
+- `link_to` for navigation, `button_to` for state-changing actions (POST/PATCH/DELETE).
+
+### HTML Safety
+
+- **Never** call `.html_safe` on user input. It disables escaping and opens XSS.
+- Use `sanitize(user_html, tags: %w[p a em strong], attributes: %w[href])` when you need to allow a limited HTML subset.
+- Prefer rendering user content with plain `<%= %>` and letting Rails escape by default.
+
+```erb
+<%= comment.body.html_safe %>   <%# BAD: XSS -- user can inject <script> %>
+<%= comment.body %>              <%# GOOD: escaped by default %>
+<%= sanitize(comment.rich_body, tags: %w[p a em strong], attributes: %w[href]) %>
+```
+
+### I18n-Ready Strings
+
+- Use `t(".key")` for user-visible strings. Lazy lookup resolves against the view path automatically.
+- Use `number_to_currency`, `number_with_delimiter`, `time_ago_in_words`, `distance_of_time_in_words` instead of hand-rolled formatters.
+
+### No Inline JavaScript
+
+- Never `<script>` blocks in ERB. Attach behavior via Stimulus `data-controller` / `data-action`.
+
+---
+
+## Error Handling Rules
+
+### Rescue Specific Exceptions
+
+- Never bare `rescue => e` -- catches everything including `SystemExit`. Use specific classes.
+- `rescue StandardError => e` is acceptable only at job/worker top-level.
+
+```ruby
+# BAD: swallows everything
+begin; external_api.fetch; rescue => e; nil; end
+
+# GOOD: specific, logs context
+begin
+  external_api.fetch
+rescue ExternalAPI::TimeoutError => e
+  Rails.logger.warn "API timeout: #{e.message}"
+  retry_with_backoff
+rescue ExternalAPI::ClientError => e
+  Rails.error.report(e, context: { endpoint: external_api.endpoint })
+end
+```
+
+### `rescue_from` for HTTP Responses
+
+- Handle common exceptions at the controller level with `rescue_from`.
+
+```ruby
+class ApplicationController < ActionController::Base
+  rescue_from ActiveRecord::RecordNotFound,       with: -> { render file: "public/404.html", status: :not_found, layout: false }
+  rescue_from ActionController::ParameterMissing, with: -> (e) { render json: { error: e.message }, status: :bad_request }
+end
+```
+
+### Never Swallow Errors
+
+- If you catch an exception, either log it with context or re-raise. Never return `nil` silently.
+- Use `Rails.error.report(exception, context: { ... })` for observability integrations.
+
+---
+
+## Performance and Caching Rules
+
+### Fragment Caching
+
+- `<% cache @post do %>` -- key auto-expires on `@post.updated_at`.
+- Russian-doll: nested caches invalidate via `touch: true` (Section 6).
+- Collection caching: `<%= render partial: "post", collection: @posts, cached: true %>`.
+
+```erb
+<% cache @post do %>
+  <h1><%= @post.title %></h1>
+  <% cache @post.comments do %><%= render @post.comments %><% end %>
+<% end %>
+```
+
+### Low-Level Caching
+
+- `Rails.cache.fetch(key, expires_in: 1.hour) { expensive_computation }` for memoizing server-side work.
+- Solid Cache is the default store in Rails 8 -- no Redis needed. It writes to the database and survives restarts.
+
+### Counter Caches
+
+- Use `counter_cache: true` on `belongs_to` to keep an association count denormalized on the parent. Avoids `COUNT(*)` queries on every render.
+
+### Indexes
+
+- Index every foreign key. Index every column you filter or sort by. Add composite indexes when you query by multiple columns together.
+- Add indexes in the same migration that adds the column whenever possible.
+
+### Lean Queries
+
+- `pluck` when you only need one or two columns.
+- `select` when you need a subset of columns as real records.
+- Prefer `size` on loaded relations (in-memory count) and `count` on unloaded relations (`SELECT COUNT(*)`).
+
+---
+
+## Security and Authentication Rules (Non-Negotiable)
+
+### Rails 8 Authentication Generator
+
+- Use `bin/rails generate authentication` to scaffold `User` + `Session` models with `has_secure_password`. No Devise.
+- Session lives in a database row; the signed cookie carries the session id.
+- Cookies must be `httponly`, `secure` in production, and `same_site: :lax`.
+
+```ruby
+class SessionsController < ApplicationController
+  allow_unauthenticated_access only: [ :new, :create ]
+
+  def create
+    if user = User.authenticate_by(session_params)
+      session = user.sessions.create!(user_agent: request.user_agent, ip_address: request.remote_ip)
+      cookies.signed.permanent[:session_token] = { value: session.signed_id, httponly: true, same_site: :lax }
+      redirect_to root_path
+    else
+      redirect_to new_session_path, alert: "Invalid credentials"
+    end
+  end
+
+  private
+    def session_params = params.expect(session: [ :email, :password ])
+end
+```
+
+### The `Current` Attributes Pattern
+
+- `Current < ActiveSupport::CurrentAttributes` holds per-request state. Set once in ApplicationController, read anywhere.
+- **Always** scope queries through `Current.user`. Never unscoped `Model.find(params[:id])` on user-owned records.
+
+```ruby
+class Current < ActiveSupport::CurrentAttributes
+  attribute :session
+  delegate :user, to: :session, allow_nil: true
+end
+
+# BAD: data leak           # GOOD: scoped, 404 on unauthorized
+Post.find(params[:id])      Current.user.posts.find(params[:id])
+```
+
+### CSRF, CSP, and Forgery Protection
+
+- `protect_from_forgery` is enabled by default. Do not disable.
+- Configure CSP in `config/initializers/content_security_policy.rb`. Whitelist sources explicitly. Never `unsafe-inline` for scripts in production.
+
+```ruby
+Rails.application.config.content_security_policy do |policy|
+  policy.default_src :self, :https
+  policy.script_src  :self, :https
+  policy.style_src   :self, :https
+  policy.object_src  :none
+  policy.frame_ancestors :none
+end
+```
+
+### Encrypted Credentials
+
+- Secrets go in `rails credentials:edit` (encrypted with `config/master.key`).
+- Access via `Rails.application.credentials.stripe.secret_key`.
+- Never commit `master.key` or unencrypted `.yml` files with secrets. Add to `.gitignore`.
+
+### Modern Browser Enforcement
+
+- Add `allow_browser versions: :modern` in `ApplicationController` to drop legacy browsers (pre-Chrome 119, Safari 17, Firefox 121). Frees you to use modern CSS, JS, and Hotwire features without polyfills.
+
+```ruby
+class ApplicationController < ActionController::Base
+  allow_browser versions: :modern
+end
+```
+
+### HTML Safety
+
+- See Section 9. Never `.html_safe` on user input.
+
+---
+
+## Project Structure Rules
+
+### Canonical Layout
+
+```
+app/
+  controllers/concerns/    # Authentication, Authorization
+  models/concerns/         # Searchable, Sluggable (cross-cutting)
+  models/user/             # User::Authentication, User::Avatarable (model-specific)
+  views/, jobs/, mailers/, helpers/
+  javascript/controllers/  # Stimulus controllers
+config/
+  initializers/            # one concern per file
+  deploy.yml               # Kamal
+  queue.yml, recurring.yml # Solid Queue
+db/migrate/, db/seeds.rb
+test/controllers/, test/models/, test/system/, test/fixtures/
+bin/setup, bin/dev, bin/ci, bin/rubocop, bin/brakeman
+```
+
+### What Does Not Belong
+
+- **No `app/services/`** by default. Add a service only when logic crosses multiple aggregates with no natural model home.
+- **No `lib/` application logic.** If it imports app models, it belongs in `app/`.
+- **No god-initializers.** Split any initializer over 50 lines.
+
+### Naming
+
+- Stimulus controllers: `<name>_controller.js` (snake_case file, auto-registered as `name`).
+- Model concerns that scope to one model: nest under `app/models/<model>/<concern>.rb`, module name `<Model>::<Concern>`.
+- Rake tasks: `lib/tasks/<namespace>.rake`, namespace `<namespace>`.
+
+---
+
+## Testing Rules
+
+### Minitest and Fixtures
+
+- **Minitest** is the default testing framework. It ships with Rails, runs fast, and has zero DSL to learn. RSpec is acceptable on existing projects that already use it (see Section 20).
+- **Fixtures** are the default for test data. They load once per suite, use deterministic ids, and reflect real schema. FactoryBot is acceptable on existing projects that already use it.
+
+```ruby
+# test/fixtures/users.yml
+alice:
+  email: alice@example.com
+  password_digest: <%= BCrypt::Password.create("password", cost: 4) %>
+
+bob:
+  email: bob@example.com
+  password_digest: <%= BCrypt::Password.create("password", cost: 4) %>
+```
+
+### Assertions
+
+- `assert_difference` for state changes: `assert_difference -> { Post.count }, +1 do ... end`.
+- `assert_enqueued_with` for jobs.
+- `assert_changes` for attribute mutation.
+- `assert_no_difference` / `assert_no_changes` when verifying nothing happened.
+
+```ruby
+# test/models/post_test.rb
+require "test_helper"
+
+class PostTest < ActiveSupport::TestCase
+  test "publish enqueues a notification job" do
+    post = posts(:draft)
+
+    assert_enqueued_with(job: NotifySubscribersJob, args: [ post ]) do
+      assert_changes -> { post.published_at }, from: nil do
+        post.publish
+      end
+    end
+  end
+end
+```
+
+### System Tests
+
+- Capybara-driven browser tests for end-to-end flows. Drop into `test/system/`.
+- Use role and label-based queries (`click_on "Publish"`, `fill_in "Title", with: "..."`), not CSS selectors.
+- Test the critical user path; system tests are slow, so be selective.
+
+```ruby
+# test/system/posts_test.rb
+require "application_system_test_case"
+
+class PostsTest < ApplicationSystemTestCase
+  test "authoring and publishing a post" do
+    sign_in users(:alice)
+
+    visit new_post_path
+    fill_in "Title", with: "Hello Hotwire"
+    fill_in "Body",  with: "Turbo Frames make this page feel instant."
+    click_on "Create Post"
+
+    assert_selector "h1", text: "Hello Hotwire"
+    click_on "Publish"
+    assert_text "Published"
+  end
+end
+```
+
+### Parallel Tests
+
+- Enable in `test/test_helper.rb`: `parallelize(workers: :number_of_processors)`.
+
+### What NOT to Test
+
+- Don't test Rails framework behavior (callbacks fire, validations run, routes route). Rails tests those.
+- Don't test trivial getters/setters.
+- Don't test implementation details: internal instance variables, private methods, specific SQL.
+
+### VCR for External HTTP
+
+- Record external API responses with `vcr` and replay in tests. Cassettes live in `test/vcr_cassettes/`.
+
+---
+
+## Tooling Rules
+
+### Linting
+
+- `rubocop-rails-omakase` -- no custom `.rubocop.yml`. Run via `bin/rubocop`.
+
+### Security Scanning
+
+- `brakeman` for Rails vulnerability scanning: `bin/brakeman`.
+- `bundler-audit` for gem CVEs.
+- `bin/importmap audit` for JavaScript dependency CVEs.
+
+### CI Script
+
+- `bin/ci` runs the full gate. Matches what CI runs, so developers can repro locally.
+
+```bash
+#!/usr/bin/env bash
+# bin/ci
+set -e
+
+bin/rubocop
+bundle exec bundler-audit --update
+bin/importmap audit
+bin/brakeman --no-pager
+bin/rails db:test:prepare
+bin/rails test
+bin/rails test:system
+```
+
+### Development Server
+
+- `bin/dev` runs Puma and Solid Queue together (via `foreman` or the Procfile.dev that `rails new` ships).
+
+---
+
+## Migrations and Database Rules
+
+### Reversible Migrations
+
+- Use `change` for automatic reversibility. Write `up`/`down` only for non-reversible data migrations.
+
+```ruby
+# GOOD: reversible
+class AddStatusToPosts < ActiveRecord::Migration[8.0]
+  def change
+    add_column :posts, :status, :integer, default: 0, null: false
+    add_index  :posts, :status
+  end
+end
+```
+
+### Zero-Downtime Patterns
+
+- **Add column**: add with default, deploy, backfill if needed.
+- **Remove column**: stop using in code (deploy), then remove (deploy).
+- **Rename column**: add new, backfill, stop using old, then remove.
+- **Large table index** (Postgres): `add_index :t, :col, algorithm: :concurrently` with `disable_ddl_transaction!`.
+
+### Foreign Keys and Constraints
+
+- Always add `foreign_key: true` to `references` columns. Database enforcement catches bugs ORMs miss.
+- `null: false` and `default:` on columns where the business rule is "must always be set".
+- `t.timestamps` on every table. Rails uses them for cache keys and ordering.
+
+### UUID Primary Keys (Optional)
+
+- Consider UUIDv7 primary keys when ids will be exposed in URLs, synced across systems, or generated outside the database. Configure via `config/application.rb`:
+  ```ruby
+  config.generators do |g|
+    g.orm :active_record, primary_key_type: :uuid
+  end
+  ```
+- Default integer primary keys are fine for most apps. Don't switch without a reason.
+
+---
+
+## Rails 8+ Features and Deployment
+
+### The Solid Trio
+
+- **Solid Queue** (jobs), **Solid Cache** (Rails.cache), **Solid Cable** (ActionCable) -- all database-backed, no Redis.
+- Net effect: a Rails 8 app runs with **just Rails and a database**.
+
+### Importmap and Propshaft
+
+- **Importmap-rails** is the default JavaScript loader. Pin packages with `bin/importmap pin <package>`. No Webpack, no esbuild, no bundler step.
+- **Propshaft** is the default asset pipeline (not Sprockets). It serves assets directly with a digest for cache busting.
+
+### Kamal Deployment
+
+- `kamal setup` / `kamal deploy` / `kamal rollback <version>`. Zero-downtime rolling deploys to any SSH-accessible server.
+
+```yaml
+# config/deploy.yml
+service: myapp
+image: maxart/myapp
+servers:
+  web: [ 192.168.0.1 ]
+  job: { hosts: [ 192.168.0.2 ], cmd: bin/jobs }
+proxy: { ssl: true, host: app.example.com }
+registry: { server: ghcr.io, username: maxart, password: [ KAMAL_REGISTRY_PASSWORD ] }
+env:
+  secret: [ RAILS_MASTER_KEY ]
+  clear: { SOLID_QUEUE_IN_PUMA: true }
+```
+
+### Health Checks and Browser Gate
+
+- Rails 8 ships `/up` by default. Point your monitor at it.
+- `allow_browser versions: :modern` in ApplicationController drops legacy browsers.
+
+---
+
+## Large Project Maintenance
+
+- `bundle outdated` monthly. One major version bump per PR. Read the changelog.
+- Delete dead code (git remembers). No commented-out blocks.
+- Refactor only when asked. Never mix refactors with features.
+- Prefer smaller alternatives:
+
+| Instead of | Use | Reason |
+|---|---|---|
+| Devise | `bin/rails generate authentication` | Built-in, ~200 lines, no dependency |
+| Sidekiq | Solid Queue | DB-backed, no Redis, runs in Puma |
+| Redis (cache / cable) | Solid Cache / Solid Cable | Same -- fewer services to run |
+| Webpacker / esbuild-rails | Importmap + Propshaft | No bundler, faster dev loop |
+| RSpec | Minitest | Ships with Rails, no DSL to learn |
+| FactoryBot | Fixtures | Faster, deterministic, real schema |
+| Pundit / CanCanCan | Model permission methods | Plain Ruby, testable, no gem |
+| Service objects | Concerns + rich models | Rails-idiomatic, fewer indirections |
+| `whenever` (cron DSL) | `config/recurring.yml` | Solid Queue's native scheduler |
+
+---
+
+## When Creating a New Rails Project
+
+1. `rails new myapp --database=postgresql` (or `sqlite3` for small self-hosted apps).
+2. `bin/rails generate authentication` (scaffolds User, Session, PasswordsController).
+3. `allow_browser versions: :modern` in ApplicationController.
+4. Configure CSP in `config/initializers/content_security_policy.rb`.
+5. `bin/rails credentials:edit` -- add secrets. Never commit `master.key`.
+6. Configure `config/deploy.yml` for Kamal.
+7. Write `bin/ci` (rubocop + brakeman + bundler-audit + importmap audit + test + test:system).
+8. Add `config/recurring.yml` for scheduled jobs.
+9. Solid Queue in-puma: `plugin :solid_queue` in `config/puma.rb`.
+10. Create `Current` attributes at `app/models/current.rb`.
+11. Write a system test covering the critical path (sign in, create resource, see it).
+12. `bin/setup` bootstraps dev: gems, DBs, migrations, seed.
+13. Enable strict loading: `config.active_record.strict_loading_by_default = true`.
+14. Commit `.env.example` if using env vars. Never commit `.env`.
+
+---
+
+## When Working on an Existing Rails Project
+
+1. Read the relevant files first. Understand existing patterns before writing.
+2. **Follow existing conventions even when they diverge from this template.** If the project uses RSpec, write RSpec. If it uses FactoryBot, use FactoryBot. If it uses Devise, use Devise. If it has `app/services/`, add your new class there.
+3. This is the centralized escape hatch for every "DHH default" in sections 3-19. Consistency with the surrounding code beats alignment with this template.
+4. Do not refactor unrelated code. Do not mix refactors with features.
+5. Do not introduce new gems or patterns without approval.
+6. Match existing naming, organization, and style. When in doubt, copy the nearest neighbor.
+
+---
+
+## Checklist Before Completing Any Task
+
+- [ ] `bin/rubocop` passes (omakase ruleset, no overrides)
+- [ ] `bin/brakeman` clean
+- [ ] `bundle exec bundler-audit` clean
+- [ ] `bin/importmap audit` clean (if the project uses importmap)
+- [ ] `bin/rails test` passes
+- [ ] `bin/rails test:system` passes (if system tests exist)
+- [ ] No N+1 queries introduced (spot-check the dev log, or enable strict loading)
+- [ ] Strong params used for every create/update action
+- [ ] No `.html_safe` on user input anywhere in the diff
+- [ ] All callbacks use lambda syntax (`after_save -> { ... }`, never `after_save :method`)
+- [ ] All async callbacks use `*_commit` variants (`after_create_commit`, never plain `after_create` for jobs/HTTP/broadcasts)
+- [ ] Migrations reversible (`change` method, or matching `up`/`down`)
+- [ ] No hardcoded secrets, API keys, or URLs -- use `Rails.application.credentials` or env vars
+- [ ] New indexes added for any new column you filter or sort by
+- [ ] No CI/CD pipeline files modified without explicit approval
+- [ ] New gems justified (checked with `bundler-audit`, no smaller alternative, fits the omakase philosophy)
+
+---
+
+## Project-Specific Overrides
+
+<!--
+Customize this section for your specific project. Examples:
+
+### State Management / Architecture
+- This project uses Trailblazer operations for complex write flows
+- All state transitions go through AASM on the Order model
+
+### Authentication
+- This project uses Devise (pre-existing). Follow the existing Devise conventions.
+- OAuth via OmniAuth for Google and GitHub
+
+### Background Jobs
+- Sidekiq with Redis (pre-existing). Do not migrate to Solid Queue.
+- Jobs under JobsSubsystem namespace; retry policy defined in ApplicationJob
+
+### Testing
+- RSpec + FactoryBot (pre-existing). Do not migrate to Minitest.
+- Minimum 80% line coverage on new code enforced in CI
+
+### Deployment
+- Kamal deploys to Hetzner. config/deploy.yml is the source of truth.
+- Do not modify .github/workflows/ without approval
+- Production DB is Postgres on a separate box; staging is SQLite
+-->
